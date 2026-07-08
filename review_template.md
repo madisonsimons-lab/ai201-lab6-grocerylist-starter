@@ -62,41 +62,44 @@ For each issue you find, note: where it is (file + function), what's wrong, and 
 ### Summary
 *What does this PR do? (1–2 sentences in your own words)*
 
->
+> Adds `GET /lists/<list_id>/stats`, meant to give an active shopping view a count of items still needed on a list, broken down by category, so a shopper can navigate the store by section.
 
 ### Issues
 
-**Issue 1**
-- Location:
-- What's wrong:
-- Why it matters:
-- Suggested fix:
+**Issue 1 — `by_category` counts all items, not remaining items (semantic mismatch)**
+- Location: `services/list_service.py` (proposed), `get_list_stats()`, lines:
+  ```python
+  items = Item.query.filter_by(list_id=list_id).all()
+  ...
+  for item in items:
+      cat = item.category or "uncategorized"
+      by_category[cat] = by_category.get(cat, 0) + 1
+  ```
+- What's wrong: `items` is every item on the list — purchased and unpurchased alike — so `by_category` counts both. But the frontend team's request was explicit: *"break down what's remaining by category... so someone shopping at a grocery store can see 'I still need 2 things in produce.'"* That's a count of unpurchased items per category, not all items per category.
+- Why it matters: Confirmed by testing on Weekly Shop — `by_category` reported `{"produce": 2, "dairy": 2, "pantry": 2, ...}`, summing to `total_items` (8), not `remaining` (5). Concretely: "dairy: 2" includes Milk, which is already purchased — only Greek Yogurt is actually still needed. Same for pantry and produce. A shopper using this to navigate the store will be told to look for items already in their cart. This is the exact scenario called out in the review framing — the code is a "sensible interpretation of breakdown by category" in the abstract, but it's the wrong subset of data for the stated use case.
+- Suggested fix: Filter to unpurchased items before building the breakdown: `for item in items: if not item.is_purchased: cat = ...`, or better, query `Item.query.filter_by(list_id=list_id, is_purchased=False).all()` separately for the category loop so `sum(by_category.values())` always equals `remaining`.
 
-**Issue 2**
-- Location:
-- What's wrong:
-- Why it matters:
-- Suggested fix:
-
-**Issue 3** *(if found)*
-- Location:
-- What's wrong:
-- Why it matters:
-- Suggested fix:
+**Issue 2 — no check that the list exists, inconsistent with the rest of the API**
+- Location: `services/list_service.py` (proposed), `get_list_stats()` — no `db.session.get(GroceryList, list_id)` check before querying items; `routes/lists.py` (proposed), `list_stats()` — no `try/except ValueError` around the call
+- What's wrong: Every other list-scoped route in the base app (`get_items`, `add_item`, `create_list`) checks the list exists and returns 404 if not. This endpoint has no such check.
+- Why it matters: Confirmed by testing — `GET /lists/bad-list-id/stats` returns `200 {"list_id": "bad-list-id", "total_items": 0, "purchased": 0, "remaining": 0, "by_category": {}}`, while `GET /lists/bad-list-id/items` (existing behavior) correctly returns `404 {"error": "List 'bad-list-id' not found"}`. A caller with a typo'd or stale list ID gets a silent "empty list" response indistinguishable from a real empty list, instead of an error pointing at the actual mistake.
+- Suggested fix: Add the same existence check used elsewhere: `if not db.session.get(GroceryList, list_id): raise ValueError(f"List {list_id!r} not found")`, and catch/map it to 404 in the route, matching `get_items`'s pattern.
 
 ### Questions for the Author
 *A good code review often surfaces design questions, not just bugs. What would you want to clarify before approving?*
 
+> Was `by_category` intended to describe the whole list's composition (a "what's on here in total" view) rather than a shopping-navigation aid? If so, the field is implemented correctly but the PR description's framing and the frontend team's quoted request don't match it — worth resolving whether the description or the code needs to change. Given the quoted use case is unambiguous about "what's remaining," I'd default to assuming the code is wrong, but want to confirm before requesting the fix.
 >
+> Would it be useful to return both an all-items breakdown *and* a remaining-only breakdown, since a "list overview" screen might want the former while the "active shopping" screen (the stated use case) wants the latter?
 
 ### Verdict
 - [ ] Approve — ship it
-- [ ] Request Changes — needs fixes before merging
+- [x] Request Changes — needs fixes before merging
 - [ ] Comment — needs discussion before a verdict
 
 **Rationale** *(1–2 sentences)*:
 
->
+> The core `by_category` field computes the wrong subset of data for the one use case the PR was written to serve — this isn't a style issue, it's the feature not doing what it was requested to do. Combined with the missing list-existence check (inconsistent with the rest of the API), this needs a fix before merging, not just discussion.
 
 ---
 
