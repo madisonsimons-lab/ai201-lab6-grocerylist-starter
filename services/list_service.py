@@ -4,6 +4,8 @@ services/list_service.py — GroceryList
 Business logic for grocery lists and their items.
 """
 
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from extensions import db
 from models import User, GroceryList, Item
